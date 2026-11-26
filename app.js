@@ -140,24 +140,29 @@ async function renderInv() {
   const [items, { data: last, error }] = await Promise.all([loadItems(), sb.from('latest_counts').select('*')]);
   if (error) throw error;
   const lastBy = Object.fromEntries(last.map(l => [l.item_id, l]));
-  const groups = groupBy(items, 'category');
+  const showOcc = localStorage.getItem('showOcc') === '1';
+  const occCount = items.filter(i => !i.regular).length;
+  const shownItems = items.filter(i => i.regular || showOcc);
+  const groups = groupBy(shownItems, 'category');
   const lowCount = items.filter(i => lastBy[i.id] && Number(lastBy[i.id].qty) < Number(i.min_qty)).length;
   view.innerHTML = `
   <div class="card"><h2>재고조사</h2>
-    <div class="muted">센 품목만 숫자를 넣고 맨 아래 저장을 누르세요. 빈칸은 저장하지 않아요. 빨간색은 최소 수량보다 적은 품목이에요.${lowCount ? ` <b class="low">부족 ${lowCount}개</b>` : ''}</div>
-    <input id="flt" placeholder="품목 검색" style="margin-top:10px">
+    <div class="muted">품목마다 지금 남아 있는 양을 넣고 맨 아래 저장을 누르세요. 빈칸은 저장하지 않아요. 빨간색은 기준 수량보다 적은 품목이에요.<br><span style="font-size:12px">Enter how much is left, then tap Save. Red = below par.</span>${lowCount ? ` <b class="low">부족 ${lowCount}개</b>` : ''}</div>
+    <input id="flt" placeholder="품목 검색 · Search" style="margin-top:10px">
+    ${occCount ? `<button class="btn sm ghost" id="occ" style="margin-top:8px">${showOcc ? '가끔 쓰는 품목 숨기기' : `가끔 쓰는 품목 ${occCount}개 보기`}</button>` : ''}
   </div>
   ${Object.entries(groups).map(([cat, list]) => `
   <div class="card grp"><h2>${esc(cat)}</h2>
     ${list.map(i => { const l = lastBy[i.id]; const low = l && Number(l.qty) < Number(i.min_qty); return `
-    <div class="item" data-name="${esc(i.name.toLowerCase())}">
-      <div class="nm ${low ? 'low' : ''}">${esc(i.name)}<small>${l ? `지난 조사 ${l.qty}${esc(i.unit)} · ${fDate(l.counted_at)}` : '조사 기록 없음'} · 최소 ${i.min_qty}</small></div>
+    <div class="item" data-name="${esc((i.name + ' ' + (i.name_en || '')).toLowerCase())}">
+      <div class="nm ${low ? 'low' : ''}">${esc(i.name)}${i.name_en ? ` <span class="muted" style="font-weight:400">${esc(i.name_en)}</span>` : ''}<small>기준 ${i.min_qty}${esc(i.unit)} · ${l ? `지난 조사 ${l.qty}${esc(i.unit)} (${fDate(l.counted_at)})` : '조사 기록 없음'}</small></div>
       <input type="number" inputmode="decimal" min="0" step="any" data-id="${i.id}" placeholder="${l ? l.qty : ''}">
       <span class="u">${esc(i.unit)}</span>
     </div>`; }).join('')}
   </div>`).join('')}
   <div class="card"><button class="btn pri block" id="save">재고조사 저장</button>
   <button class="btn ghost block" id="toOrd" style="margin-top:8px">부족한 품목 발주요청 만들기</button></div>`;
+  document.getElementById('occ')?.addEventListener('click', () => { localStorage.setItem('showOcc', showOcc ? '0' : '1'); renderInv(); });
   document.getElementById('flt').oninput = e => { const v = e.target.value.trim().toLowerCase(); document.querySelectorAll('.item').forEach(el => el.style.display = !v || el.dataset.name.includes(v) ? '' : 'none'); };
   document.getElementById('save').onclick = async e => {
     const rows = [...document.querySelectorAll('.item input')].filter(x => x.value !== '').map(x => ({ item_id: Number(x.dataset.id), qty: Number(x.value) }));
@@ -173,7 +178,7 @@ async function renderInv() {
     const lows = items.filter(i => { const q = typed[i.id] ?? lastBy[i.id]?.qty; return q !== undefined && Number(q) < Number(i.min_qty); });
     if (!lows.length) return toast('부족한 품목이 없어요');
     if (!confirm(`부족 품목 ${lows.length}개를 발주요청할까요?\n\n${lows.map(i => '· ' + i.name).join('\n')}`)) return;
-    const rows = lows.map(i => { const q = Number(typed[i.id] ?? lastBy[i.id].qty); return { item_id: i.id, item_name: i.name, unit: i.unit, qty: Math.max(Number(i.min_qty) * 2 - q, 1), note: `재고 ${q}${i.unit} (최소 ${i.min_qty})` }; });
+    const rows = lows.map(i => { const q = Number(typed[i.id] ?? lastBy[i.id].qty); return { item_id: i.id, item_name: i.name, unit: i.unit, qty: Math.max(Math.ceil(Number(i.min_qty) - q), 1), note: `남은 양 ${q}${i.unit} (기준 ${i.min_qty})` }; });
     const { error } = await sb.from('orders').insert(rows);
     if (error) return err(error);
     toast('발주요청을 만들었어요'); go('ord');
@@ -192,7 +197,7 @@ async function renderOrd() {
   view.innerHTML = `
   <div class="card"><h2>발주요청 하기</h2>
     <label>품목</label>
-    <select id="it"><option value="">직접 입력</option>${items.map(i => `<option value="${i.id}">[${esc(i.category)}] ${esc(i.name)}</option>`).join('')}</select>
+    <select id="it"><option value="">직접 입력</option>${items.map(i => `<option value="${i.id}">[${esc(i.category)}] ${esc(i.name)}${i.name_en ? ' · ' + esc(i.name_en) : ''}${i.regular ? '' : ' (가끔)'}</option>`).join('')}</select>
     <div id="freeWrap"><label>품목 이름</label><input id="free" placeholder="목록에 없는 품목"></div>
     <div class="row"><div><label>수량</label><input id="qty" type="number" inputmode="decimal" min="0" step="any"></div><div><label>단위</label><input id="unit" value="개"></div></div>
     <label>메모 (선택)</label><input id="note" placeholder="예: 내일 오전까지">
@@ -209,7 +214,7 @@ async function renderOrd() {
     </div>`).join('') || '<div class="muted">요청이 없어요</div>'}
   </div>`;
   const it = document.getElementById('it');
-  it.onchange = () => { const i = items.find(x => x.id == it.value); document.getElementById('freeWrap').style.display = i ? 'none' : ''; if (i) document.getElementById('unit').value = i.unit; };
+  it.onchange = () => { const i = items.find(x => x.id == it.value); document.getElementById('freeWrap').style.display = i ? 'none' : ''; if (i) { document.getElementById('unit').value = i.unit; document.getElementById('qty').value = i.min_qty; } };
   document.querySelectorAll('[data-f]').forEach(b => b.onclick = () => { localStorage.setItem('ordFlt', b.dataset.f); renderOrd(); });
   document.getElementById('req').onclick = async e => {
     const i = items.find(x => x.id == it.value);
@@ -310,23 +315,29 @@ async function admItems() {
   const cats = [...new Set(items.map(i => i.category))];
   box.innerHTML = `<div class="card"><h2>품목 추가</h2>
     <div class="row"><div><label>분류</label><input id="nc" list="cats" placeholder="예: 채소"><datalist id="cats">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist></div><div><label>품목명</label><input id="nn"></div></div>
-    <div class="row"><div><label>단위</label><input id="nu" value="개"></div><div><label>최소 수량</label><input id="nm" type="number" inputmode="decimal" value="0"></div></div>
+    <label>영문명 (선택)</label><input id="ne" placeholder="English name">
+    <div class="row"><div><label>단위</label><input id="nu" value="개"></div><div><label>기준 수량</label><input id="nm" type="number" inputmode="decimal" value="1"></div></div>
     <br><button class="btn block" id="addI">추가</button></div>
-  <div class="card"><h2>품목 목록</h2><div class="muted">숨긴 품목은 재고조사·발주 목록에서 빠지지만 기록은 남아요.</div>
-  ${items.map(i => `<div class="item" style="${i.active ? '' : 'opacity:.45'}">
-    <div class="nm"><input value="${esc(i.name)}" data-f="name" data-id="${i.id}" style="width:100%;text-align:left"><small>${esc(i.category)}${i.active ? '' : ' · 숨김'}</small></div>
-    <input value="${i.min_qty}" type="number" inputmode="decimal" data-f="min_qty" data-id="${i.id}" title="최소 수량" style="width:64px">
-    <input value="${esc(i.unit)}" data-f="unit" data-id="${i.id}" style="width:52px;text-align:center">
-    <button class="btn sm ghost" data-tg="${i.id}" data-a="${i.active ? 0 : 1}">${i.active ? '숨김' : '복구'}</button></div>`).join('')}</div>`;
+  <div class="card"><h2>품목 목록</h2><div class="muted">기준 수량은 '이만큼은 늘 있어야 한다'는 양이에요. '자주'는 재고조사에 항상 나오고, '가끔'은 펼쳐야 보여요. 숨긴 품목은 목록에서 빠지지만 기록은 남아요.</div>
+  ${Object.entries(groupBy(items, 'category')).map(([cat, list]) => `<h3>${esc(cat)} (${list.length})</h3>` + list.map(i => `<div class="item" style="${i.active ? '' : 'opacity:.45'};flex-wrap:wrap">
+    <div class="nm" style="min-width:150px"><input value="${esc(i.name)}" data-f="name" data-id="${i.id}" style="width:100%;text-align:left"><input value="${esc(i.name_en || '')}" data-f="name_en" data-id="${i.id}" placeholder="영문명" style="width:100%;text-align:left;margin-top:4px;font-size:13px">${i.active ? '' : '<small>숨김</small>'}</div>
+    <input value="${i.min_qty}" type="number" inputmode="decimal" data-f="min_qty" data-id="${i.id}" title="기준 수량" style="width:56px">
+    <input value="${esc(i.unit)}" data-f="unit" data-id="${i.id}" style="width:48px;text-align:center">
+    <button class="btn sm ${i.regular ? '' : 'ghost'}" data-rg="${i.id}" data-v="${i.regular ? 0 : 1}">${i.regular ? '자주' : '가끔'}</button>
+    <button class="btn sm ghost" data-tg="${i.id}" data-a="${i.active ? 0 : 1}">${i.active ? '숨김' : '복구'}</button></div>`).join('')).join('')}</div>`;
   document.getElementById('addI').onclick = async () => {
     const name = document.getElementById('nn').value.trim(); if (!name) return toast('품목명을 써 주세요');
-    const { error } = await sb.from('items').insert({ category: document.getElementById('nc').value.trim() || '기타', name, unit: document.getElementById('nu').value.trim() || '개', min_qty: Number(document.getElementById('nm').value) || 0, sort: 999 });
+    const { error } = await sb.from('items').insert({ category: document.getElementById('nc').value.trim() || '기타', name, name_en: document.getElementById('ne').value.trim(), unit: document.getElementById('nu').value.trim() || '개', min_qty: Number(document.getElementById('nm').value) || 1, sort: 999 });
     if (error) return err(error); toast('추가했어요'); admItems();
   };
   box.querySelectorAll('input[data-f]').forEach(inp => inp.onchange = async () => {
     const v = inp.dataset.f === 'min_qty' ? Number(inp.value) || 0 : inp.value.trim();
     const { error } = await sb.from('items').update({ [inp.dataset.f]: v }).eq('id', inp.dataset.id);
     if (error) return err(error); toast('저장했어요');
+  });
+  box.querySelectorAll('[data-rg]').forEach(b => b.onclick = async () => {
+    const { error } = await sb.from('items').update({ regular: b.dataset.v === '1' }).eq('id', b.dataset.rg);
+    if (error) return err(error); admItems();
   });
   box.querySelectorAll('[data-tg]').forEach(b => b.onclick = async () => {
     const { error } = await sb.from('items').update({ active: b.dataset.a === '1' }).eq('id', b.dataset.tg);
