@@ -50,6 +50,7 @@ async function boot() {
   }
   nav.classList.remove('hide');
   document.getElementById('admTab').classList.toggle('hide', me.role !== 'owner');
+  refreshBadge();
   if (tab === 'adm' && me.role !== 'owner') tab = 'att';
   go(tab);
 }
@@ -93,7 +94,21 @@ function renderLogin(mode = 'login') {
 
 // ---------- tabs ----------
 nav.querySelectorAll('button').forEach(b => b.onclick = () => go(b.dataset.tab));
+// 처리 안 한 발주요청(상태 '요청') 개수 배지 - 사장님 계정에만 표시
+async function refreshBadge() {
+  const b = document.getElementById('ordBadge');
+  if (!me || me.role !== 'owner' || !me.approved) { b.classList.add('hide'); return; }
+  const { count, error } = await sb.from('orders').select('id', { count: 'exact', head: true }).eq('status', '요청');
+  if (error) return;
+  b.textContent = count > 99 ? '99+' : count;
+  b.classList.toggle('hide', !count);
+  document.title = count ? `(${count}) 태태 매장관리` : '태태 매장관리';
+}
+setInterval(refreshBadge, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { refreshBadge(); if (me && tab === 'ord') renderOrd(); } });
+
 function go(t) {
+  refreshBadge();
   tab = t; localStorage.setItem('tab', t);
   nav.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
   view.innerHTML = `<div class="card center muted">불러오는 중...</div>`;
@@ -226,11 +241,11 @@ async function renderOrd() {
     const { error } = await sb.from('orders').insert({ item_id: i?.id ?? null, item_name: name, qty, unit: document.getElementById('unit').value.trim() || '개', note: document.getElementById('note').value.trim() });
     e.target.disabled = false;
     if (error) return err(error);
-    toast('발주요청을 보냈어요'); renderOrd();
+    toast('발주요청을 보냈어요'); renderOrd(); refreshBadge();
   };
   document.querySelectorAll('[data-oid]').forEach(s => s.onchange = async () => {
     const { error } = await sb.from('orders').update({ status: s.value, updated_at: new Date().toISOString() }).eq('id', s.dataset.oid);
-    if (error) return err(error); toast(`'${s.value}'(으)로 바꿨어요`); renderOrd();
+    if (error) return err(error); toast(`'${s.value}'(으)로 바꿨어요`); renderOrd(); refreshBadge();
   });
   document.querySelectorAll('[data-cancel]').forEach(b => b.onclick = async () => {
     if (!confirm('이 요청을 취소할까요?')) return;
